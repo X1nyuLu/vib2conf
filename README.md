@@ -35,7 +35,7 @@ reproduce the results by
 python main.py \
 -train \
 --launch base \
---model spec2conf_equiformer_moe_concat_balance0001 \
+--model spec2conf_equiformer_moe_balance0001 \
 --ds qm9s \
 --task raman
 
