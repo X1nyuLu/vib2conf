@@ -15,7 +15,7 @@ xyzdata/
 tmp.*
 
 # ignore png files
-*.png
+
 *.svg
 
 # ignore npy files
