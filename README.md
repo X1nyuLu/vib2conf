@@ -80,3 +80,6 @@ Please cite our work as follow if you use our code in your research:
 # Feedback
 Please contact the authors at [xinyulu@stu.xmu.edu.cn](mailto:xinyulu@stu.xmu.edu.cn) or just submit a issue on GitHub if you have any feedback or suggestions.
 
+---
+
+This repo is derived from the codes of our previous work [Vib2Mol](https://github.com/X1nyuLu/vib2mol).
