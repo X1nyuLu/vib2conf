@@ -12,10 +12,8 @@
 
 
 import uuid
-import re
 import os
 import time
-import json
 import torch
 import logging
 import argparse
@@ -32,64 +30,67 @@ import warnings
 
 
 warnings.simplefilter("ignore", FutureWarning)
-os.environ["TOKENIZERS_PARALLELISM"] = "false"
-
 
 def get_args_parser():
-    parser = argparse.ArgumentParser('spec2conf', add_help=False)
+    parser = argparse.ArgumentParser('Vib2Conf', add_help=True)
 
-    # basic params
-    parser.add_argument('--model', default='spec2conf_equiformer_moe3',
-                        help="Choose network")
+    # ==================== Basic Parameters ====================
+    parser.add_argument('--model', default='vibraclip',
+                        help="Name of the network architecture")
     parser.add_argument('--launch', default='base',
-                        help="Choose losses for training")
-    parser.add_argument('--ds', default='vb_mols',
-                        help="Choose dataset")
-    parser.add_argument('--task', default='raman',
-                        help='Chose the task of this dataset')
+                        help="Training launch config (selects loss combination and training strategy)")
+    parser.add_argument('--ds', default='nist',
+                        help="Dataset name")
+    parser.add_argument('--task', default='ir',
+                        help='Prediction task on the selected dataset')
+    parser.add_argument('--grad-props', default=None,
+                        help="Properties to be predicted via gradient computation")
+    
+    # ==================== Run Mode ====================
+    mode_group = parser.add_mutually_exclusive_group(required=True)
+    mode_group.add_argument('--train', action='store_true',
+                            help="start train")
+    mode_group.add_argument('--debug', action='store_true',
+                            help="start debug")
 
-    parser.add_argument('--train', '-train', action='store_true',
-                        help="start train")
-    parser.add_argument('--test', '-test', action='store_true',
-                        help="start test")
-    parser.add_argument('--debug', '-debug', action='store_true',
-                        default=1,
-                        help="start debug")
-    
-    parser.add_argument('--device', default='cpu',
-                        help="Choose GPU device")
-    parser.add_argument('--base_model_path', 
-                        # default='',
-                        help="Choose base model for fine-tune")
-    parser.add_argument('--test_model_path',
-                        help="Choose timestamp for test")
-    parser.add_argument('--seed', default=624,
-                        help="Random seed")
-    parser.add_argument('-ddp', '--ddp', action='store_true',
-                        default=False,
-                        help="Use DistributedDataParallel")
-    parser.add_argument('-force-reload', '--force-reload', action='store_true',
-                    default=False,
-                    help="reload datasets")
-    
-    # params of strategy
-    parser.add_argument('--batch_size', type=int, 
-                        help="batch size for training")
-    parser.add_argument('--epoch', type=int, 
-                        help="epochs for training")
-    parser.add_argument('--lr', type=float, 
-                        help="learning rate")
-    parser.add_argument('--use_ema', action='store_true',
-                        default=True,
-                        help="employ Exponential Moving Average")
-    parser.add_argument('--frozen_encoder', action='store_true',
-                        default=False,
-                        help="just train the matching module")
+    # ==================== Device & Distributed Training ====================
+    parser.add_argument('--device', default='cuda:0',
+                        help="GPU device to run on")
+    parser.add_argument('--base-model-path',
+                        default='',
+                        help="Path to the pretrained base model (for fine-tuning)")
+    parser.add_argument('--seed', default=624, type=int,
+                        help="Random seed for reproducibility")
+    parser.add_argument('--ddp', '-ddp', action='store_true', default=False,
+                        help="Enable DistributedDataParallel (DDP) training")
+    parser.add_argument('--force-reload', action='store_true', default=False,
+                        help="Force reload datasets from scratch")
+
+    # ==================== Training Strategy ====================
+    parser.add_argument('--batch-size', type=int,
+                        help="Batch size for training")
+    parser.add_argument('--epoch', type=int,
+                        help="Total number of training epochs")
+    parser.add_argument('--lr', type=float,
+                        help="Initial learning rate")
+    parser.add_argument('--config', default=None, type=str,
+                        help="Path to the hyper-parameter config file")
+    parser.add_argument('--grad-norm', type=float, default=1.0,
+                        help="Maximum norm for gradient clipping")
+
+    # ==================== Checkpoint ====================
+    parser.add_argument('--find-unused-parameters', action='store_true', default=False,
+                        help="Set find_unused_parameters=True in DDP (useful when some params receive no gradient)")
+    parser.add_argument('--use-ema', action='store_true', dest='use_ema', default=False,
+                        help="Enable Exponential Moving Average (EMA)")
+
     args = parser.parse_args()
     return args
 
 
-def init_logs(local_rank):
+def init_logs(args, local_rank, ts, random_id):
+    if args.debug:
+        return
 
     os.makedirs(f'logs/{args.ds}/{args.task}/{args.model}', exist_ok=True)
 
@@ -97,31 +98,31 @@ def init_logs(local_rank):
         logging.basicConfig(
             filename=f'logs/{args.ds}/{args.task}/{args.model}/{ts}-{random_id}.log',
             format='%(levelname)s:%(message)s',
-            level=logging.INFO)
+            level=logging.INFO
+            )
 
         logging.info({k: v for k, v in args.__dict__.items() if v})
         print(f'logging save path: ./logs/{args.ds}/{args.task}/{args.model}/{ts}-{random_id}.log')
 
-def init_device():
-    if args.ddp:   # set up distributed device
+
+def init_device(args):
+    if args.ddp:
         local_rank = int(os.environ["LOCAL_RANK"])
-        ddp_device = torch.device("cuda", local_rank)
-        return ddp_device
-    else:
-        return args.device
-    
-        
-def init_model(local_rank):
-    
-    if args.train:
+        return torch.device("cuda", local_rank)
+    return args.device
+
+
+def init_model(args, device, local_rank, ts, random_id):
+
+    if args.train and not args.debug:
         if local_rank == 0:
             os.makedirs(f"checkpoints/{args.ds}/{args.task}/{args.model}/{ts}-{random_id}", exist_ok=True)
 
     with open('config.yaml', "r", encoding="utf-8") as f:
         config = yaml.safe_load(f)
-        
+
     defaults = config.pop('defaults')
-    task_config = config[args.launch]
+    task_config = config[args.launch] if args.config is None else config[args.config]
     params = defaults.copy()
     params.update(task_config)
 
@@ -131,55 +132,21 @@ def init_model(local_rank):
         params['epoch'] = args.epoch
     if args.lr:
         params["lr"] = args.lr
-    
-    model = models.build_model(args.model)
-        
+    if args.debug:
+        params['epoch'] = 1
+
+    model = models.build_model(args.model, **params)
+
     if 'cuda' in args.device and not args.ddp:
         model = model.to(device)
-        
+
     base_model_path = args.base_model_path
     if base_model_path:
         ckpt = torch.load(base_model_path, map_location='cpu', weights_only=True)
         ckpt = {k.replace('module.', ''): v for k, v in ckpt.items()}
-        
-        model_state_dict = model.state_dict()
-    
-        filtered_ckpt = {}
-        mismatched_keys = []
-        
-        for k, v in ckpt.items():
-            if k in model_state_dict:
-                if v.shape == model_state_dict[k].shape:
-                    filtered_ckpt[k] = v
-                else:
-                    mismatched_keys.append(f"{k}: ckpt {list(v.shape)} -> model {list(model_state_dict[k].shape)}")
-            else:
-                pass
+        model.load_state_dict(ckpt, strict=False)
 
-        if mismatched_keys:
-            print("="*50)
-            print("Warning: Skipping weights due to SIZE MISMATCH:")
-            for msg in mismatched_keys:
-                print(f"  - {msg}")
-            print("These layers will be initialized from scratch.")
-            print("="*50)
-
-        model.load_state_dict(filtered_ckpt, strict=False)
-    
-    
-    if args.launch == 'matching' and args.frozen_encoder:
-        learnable_modules = [model.matching_head, model.matching_encoder, model.matching_token]
-        for param in model.parameters():
-            param.requires_grad = False
-        
-        for module in learnable_modules:
-            if isinstance(module, torch.nn.Parameter):
-                module.requires_grad = True
-            elif isinstance(module, torch.nn.Module):
-                for param in module.parameters():
-                    param.requires_grad = True
-                    
-    if args.ddp:   # set up distributed device
+    if args.ddp:
         rank = int(os.environ["RANK"])
         local_rank = int(os.environ["LOCAL_RANK"])
         torch.cuda.set_device(rank % torch.cuda.device_count())
@@ -190,50 +157,53 @@ def init_model(local_rank):
         if torch.multiprocessing.get_start_method(allow_none=True) is None:
             torch.multiprocessing.set_start_method('spawn')
         model = model.to(ddp_device)
-        model = DDP(model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
+        model = DDP(model, device_ids=[local_rank], output_device=local_rank,
+                    find_unused_parameters=args.find_unused_parameters)
 
     return model, params
-
-def catch_exception():
-    import traceback
-    import shutil
-
-    traceback.print_exc()
-    
-    if os.path.exists(f'logs/{args.ds}/{args.task}/{args.model}/{ts}-{random_id}.log'):
-        os.remove(f'logs/{args.ds}/{args.task}/{args.model}/{ts}-{random_id}.log') 
-        print('unexpected log has been deleted')
-    if os.path.exists(f'runs/{args.ds}/{args.task}/{args.model}/{ts}-{random_id}'):
-        shutil.rmtree(f'runs/{args.ds}/{args.task}/{args.model}/{ts}-{random_id}')
-        print('unexpected tensorboard record has been deleted')
 
 
 if __name__ == "__main__":
 
     args = get_args_parser()
-    device = init_device()
+    device = init_device(args)
     local_rank = 0 if not args.ddp else int(os.environ["LOCAL_RANK"])
 
-    seed_everything(int(args.seed))
-    
+    seed_everything(args.seed)
+
+    if args.grad_props:
+        task_set = set(args.task.split('-'))
+        for gp in args.grad_props.split('-'):
+            assert gp in task_set, (
+                f"grad-props element '{gp}' must also be present in --task '{args.task}'. "
+                f"Available tasks: {sorted(task_set)}"
+            )
+
     ts = time.strftime('%Y-%m-%d-%H-%M', time.localtime())
     random_id = uuid.uuid4().hex[:6]
-    
+
     model_save_path = f"checkpoints/{args.ds}/{args.task}/{args.model}/{ts}-{random_id}"
-    
-    try:
-        model, params = init_model(local_rank)
-        init_logs(local_rank)
-        logging.info({k: v for k, v in params.items()})
 
-        if args.train or args.debug:
-            trainers.launch_training(args.launch, model=model, ds=args.ds, task=args.task, data_dir='./datasets',
-                            model_save_path=model_save_path, device=device, ddp=args.ddp, rank=local_rank, config=params,
-                            force_reload=args.force_reload, use_ema=args.use_ema)
-        
-        elif args.test:
-            raise 'use notebook for evaluation'
+    if args.debug:
+        model_save_path = None
 
-    except Exception as e:
-        print(e)
-        catch_exception()
+    model, params = init_model(args, device, local_rank, ts, random_id)
+    init_logs(args, local_rank, ts, random_id)
+    logging.info({k: v for k, v in params.items()})
+
+    if args.train or args.debug:
+        trainers.launch_training(
+            args.launch,
+            model=model,
+            ds=args.ds,
+            task=args.task,
+            data_dir='datasets',
+            model_save_path=model_save_path,
+            device=device,
+            ddp=args.ddp,
+            rank=local_rank,
+            config=params,
+            force_reload=args.force_reload,
+            grad_norm=args.grad_norm,
+            use_ema=args.use_ema,
+        )

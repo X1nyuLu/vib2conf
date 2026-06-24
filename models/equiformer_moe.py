@@ -32,7 +32,6 @@ _USE_BIAS = True
 
 _MAX_ATOM_TYPE = 36
 # Statistics of QM9 with cutoff radius = 5
-# This hyperparameter affects almost nothing to the performance of the model.
 _AVG_NUM_NODES = 18.03065905448718
 _AVG_DEGREE = 15.57930850982666
 
@@ -731,7 +730,8 @@ class GraphAttention(torch.nn.Module):
         return output_str
                     
 
-@compile_mode('script') # implement Expert module
+@compile_mode('script')
+# Custom Expert module
 class Expert(torch.nn.Module):
     def __init__(self, irreps_node_input, irreps_node_attr, irreps_mlp_mid, irreps_node_output):
         super().__init__()
@@ -741,8 +741,8 @@ class Expert(torch.nn.Module):
             irreps_mlp_mid, irreps_node_attr, irreps_node_output, bias=True, rescale=True)
 
     def forward(self, node_input, node_attr):
-        output = self.fctp_1(node_input, node_attr)
-        output = self.fctp_2(output, node_attr)
+        output = self.fctp_1(node_input, node_attr)  # first layer: takes node_input + node_attr
+        output = self.fctp_2(output, node_attr)      # second layer: takes previous output + node_attr
         return output
     
 # MoE FeedForwardNetwork
@@ -779,10 +779,10 @@ class FeedForwardNetwork(torch.nn.Module):
     def forward(self, node_input, node_attr, **kwargs):
 
         gate_logits = self.gate(node_input)  # [N, num_experts]
-        weights = torch.softmax(gate_logits, dim=1)  # transform to probabilities
+        weights = torch.softmax(gate_logits, dim=1)  # convert to probability distribution
 
         importance = weights.sum(0) 
-        # calculate CV loss = var(importance) / mean(importance)^2
+        # squared coefficient of variation loss: CV^2 = var(importance) / mean(importance)^2
         loss_bal = self.num_experts * (importance.pow(2).sum() / importance.sum().pow(2)) - 1
         self.aux_loss = loss_bal
         

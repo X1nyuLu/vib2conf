@@ -10,8 +10,28 @@ defaults:
   warmup_epochs: 0
   weight_decay: 1e-2
 
-matching:
-  batch_size: 128
 
 base:
   batch_size: 128
+
+
+smen:
+  batch_size: 256
+  epoch: 500
+  lr: 0.0001
+  lr_sched: 'constant'
+  min_lr: 0.0001
+  warmup_lr: 0.0001
+  warmup_epochs: 0
+  weight_decay: 1.0e-06
+
+vibraclip:
+  batch_size: 128
+  epoch: 200
+  lr: 0.0004
+  lr_sched: 'constant'
+  min_lr: 0.0004
+  warmup_lr: 0.0004
+  warmup_epochs: 0
+  weight_decay: 0.1
+  temperature: 141

@@ -7,14 +7,14 @@ from torch.utils.data.distributed import DistributedSampler
 from timm.scheduler import create_scheduler_v2
 from timm.utils import ModelEmaV2
 
-from utils.engine import AverageMeter, Monitor, BaseEngine
+from utils.engine import AverageMeter, Monitor, BaseEngine, NoopSummaryWriter
 from utils.dataloader import Dataloader
 from trainers import register_function
 
 class BaseTrainer:
     def __init__(self,
                  model, model_save_path=None, device='cpu', ddp=False, rank=-1, config=None,
-                 ds=None, task=None, data_dir=None, force_reload=False, use_ema=False,
+                 ds=None, task=None, data_dir=None, force_reload=False, grad_norm=1.0, use_ema=False,
                  **kwargs):
         
         self.model = model
@@ -28,10 +28,13 @@ class BaseTrainer:
         self.data_dir = data_dir
         self.force_reload = force_reload
         self.use_ema = use_ema
+        self.grad_norm = grad_norm
         
     def init_dataset(self):
-        if self.rank == 0:
+        if self.rank == 0 and self.model_save_path:
             self.writer = SummaryWriter(self.model_save_path.replace('checkpoints', 'runs'))
+        else:
+            self.writer = NoopSummaryWriter()
 
         target_keys = self.task.split('-')
         dataloader = Dataloader(
@@ -130,20 +133,17 @@ class Trainer(BaseTrainer):
                 self.writer.add_scalar('train_loss', train_loss, epoch)
                 self.writer.add_scalar('eval_loss', eval_output['loss'], epoch)
                 self.writer.add_scalar('eval_recall', eval_output['recall'], epoch)
-                if eval_output['acc'] is not None:
-                    self.writer.add_scalar('eval_acc', eval_output['acc'], epoch)
                 
                 self.monitor(
                     epoch_score=eval_output['recall'], 
                     model=self.engine.model_ema.module if self.use_ema else self.model, 
-                    model_path=f"{self.model_save_path}/epoch{epoch}.pth"
+                    model_path=f"{self.model_save_path}/epoch{epoch}.pth" if self.model_save_path else None
                     )
                 
-                val_acc_desc = f", valid acc:{eval_output['acc']:6f}" if eval_output['acc'] is not None else ""
                 logging.info(
-                    f"Epoch{epoch:4d}, valid loss:{eval_output['loss']:6f}, valid recall:{eval_output['recall']:6f}{val_acc_desc}, best recall:{self.monitor._display_best_score():6f}")
+                    f"Epoch{epoch:4d}, valid loss:{eval_output['loss']:6f}, valid recall:{eval_output['recall']:6f}, best recall:{self.monitor._display_best_score():6f}")
             
-        if self.rank == 0:
+        if self.rank == 0 and self.model_save_path:
             torch.save(self.model.state_dict(), f'{self.model_save_path}/epoch{epoch}.pth')
             print(self.monitor._display_best_score())
         if self.rank == 0:
@@ -151,5 +151,5 @@ class Trainer(BaseTrainer):
             
         
 @register_function('base')
-def train_matching_model(*args, **kwargs):
+def train_base(*args, **kwargs):
     return train_model(Trainer, BaseEngine, *args, **kwargs)

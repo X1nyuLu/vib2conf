@@ -3,6 +3,7 @@ import lmdb
 import pickle 
 
 from functools import lru_cache, partial
+from typing import Iterable, Optional
 from tqdm import tqdm
 
 import pandas as pd
@@ -16,34 +17,18 @@ from torch_geometric.loader import DataLoader
 
 from torch_cluster import radius_graph
 
-MAX_NMR_SHIFTS = 32
 
 def pre_transform_func(data: dict) -> Data:
     
     pos = torch.as_tensor(data['pos'], dtype=torch.float32)
     edge_index = radius_graph(x=pos, r=5.0)
     
-    if 'hnmr' in data and 'cnmr' in data:
-        hnmr = torch.as_tensor(data['hnmr'], dtype=torch.float32)
-        cnmr = torch.as_tensor(data['cnmr'], dtype=torch.float32)
-        
-        hnmr = torch.sort(hnmr, dim=0)[0]
-        cnmr = torch.sort(cnmr, dim=0)[0]
-        
-        padded_hnmr = torch.zeros(MAX_NMR_SHIFTS, dtype=torch.float32)
-        padded_hnmr[:len(hnmr)] = hnmr.flatten()
-        
-        padded_cnmr = torch.zeros(MAX_NMR_SHIFTS, dtype=torch.float32)
-        padded_cnmr[:len(cnmr)] = cnmr.flatten()
-    
     data_object = Data(
         pos=pos,
         edge_index=edge_index,
         x=torch.as_tensor(data['z'], dtype=torch.long),
-        ir=torch.as_tensor(data['ir'], dtype=torch.float32).reshape(1, -1),
-        raman=torch.as_tensor(data['raman'], dtype=torch.float32).reshape(1, -1),
-        hnmr=padded_hnmr.reshape(1, -1) if 'hnmr' in data else None,
-        cnmr=padded_cnmr.reshape(1, -1) if 'cnmr' in data else None,
+        ir=torch.as_tensor(data['ir'], dtype=torch.float32).reshape(1, -1) if 'ir' in data else None,
+        raman=torch.as_tensor(data['raman'], dtype=torch.float32).reshape(1, -1) if 'raman' in data else None,
         )
     
     return data_object
@@ -86,10 +71,9 @@ class Spec2ConfDataset(InMemoryDataset):
         self.save(data_list, self.processed_paths[0])
         # For PyG<2.4:
         # torch.save(self.collate(data_list), self.processed_paths[0])
-        
 
 
-     
+
 class Dataloader:
     def __init__(self, 
                  ds, 

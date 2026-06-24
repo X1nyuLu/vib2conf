@@ -19,7 +19,7 @@ def seed_everything(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
-    
+
 class AverageMeter:
     """Computes and stores the average and current value"""
     def __init__(self):
@@ -46,10 +46,19 @@ class Monitor:
         self.val_score = None
         self.keep_n = keep_n
         self.recent_checkpoints = []
-        
+
     def __call__(self, epoch_score, model, model_path):
         should_save = False
-        
+
+        if model_path is None:
+            if self.best_score is None:
+                self.best_score = -epoch_score if self.mode == 'min' else float(epoch_score)
+            else:
+                score = -epoch_score if self.mode == 'min' else float(epoch_score)
+                if score > self.best_score + self.delta:
+                    self.best_score = score
+            return
+
         if self.mode == 'min':
             score = -1.0 * epoch_score
         else:
@@ -65,8 +74,10 @@ class Monitor:
 
         if should_save:
             self._save_and_cleanup(epoch_score, model, model_path)
-            
+
     def _save_and_cleanup(self, epoch_score, model, model_path):
+        if model_path is None:
+            return
         torch.save(model.state_dict(), model_path)
         self.val_score = epoch_score
         self.recent_checkpoints.append(model_path)
@@ -74,13 +85,13 @@ class Monitor:
         if len(self.recent_checkpoints) > 0 and len(self.recent_checkpoints) > self.keep_n:
             oldest_path = self.recent_checkpoints.pop(0)
             if os.path.exists(oldest_path):
-                os.remove(oldest_path)                        
-                        
+                os.remove(oldest_path)
+
     def _display_best_score(self):
         if self.mode == 'min':
             return -1.0 * self.best_score
         return self.best_score
-                
+
 class BaseEngine:
     def __init__(self, train_loader=None, eval_loader=None, test_loader=None,
                  optimizer=None, scheduler=None,
@@ -106,29 +117,27 @@ class BaseEngine:
 
         if self.scheduler:
             self.scheduler.step(epoch)
-            
+
         bar = tqdm(self.train_loader) if self.device_rank == 0 else self.train_loader
         for batch in bar:
             self.optimizer.zero_grad()
-            
+
             batch['raman'] = batch['raman'].to(self.device) if 'raman' in self.task else None
             batch['ir'] = batch['ir'].to(self.device) if 'ir' in self.task else None
-            batch['hnmr'] = batch['hnmr'].to(self.device) if 'hnmr' in self.task else None
-            batch['cnmr'] = batch['cnmr'].to(self.device) if 'cnmr' in self.task else None
-            
+
             output = self.model(inputs=batch.to(self.device))
-                
+
             loss = output['loss']
             loss.backward()
-            
+
             # Gradient Clipping
             if max_grad_norm > 0:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), max_norm=max_grad_norm)
-            
+
             self.optimizer.step()
             if self.model_ema is not None:
                 self.model_ema.update(self.model)
-            
+
             train_losses.update(loss.detach().item(), batch.batch.max().item()+1)
             if self.device_rank == 0:
                 bar.set_description(
@@ -147,45 +156,41 @@ class BaseEngine:
         eval_acc = AverageMeter()
 
         self.model.eval()
-        
+
         all_molecular_embeddings = []
         all_spectra_embeddings = []
 
         bar = tqdm(self.eval_loader) if self.device_rank == 0 else self.eval_loader
 
         for batch in bar:
-            
-            self.optimizer.zero_grad()
-            
+
             batch['raman'] = batch['raman'].to(self.device) if 'raman' in self.task else None
             batch['ir'] = batch['ir'].to(self.device) if 'ir' in self.task else None
-            batch['hnmr'] = batch['hnmr'].to(self.device) if 'hnmr' in self.task else None
-            batch['cnmr'] = batch['cnmr'].to(self.device) if 'cnmr' in self.task else None
-            
+
             if self.model_ema is not None:
                 output = self.model_ema.module(inputs=batch.to(self.device), return_proj_output=True)
             else:
                 output = self.model(inputs=batch.to(self.device), return_proj_output=True)
-                
+
             eval_losses.update(output['loss'].item(), batch.batch.max().item()+1)
             eval_losses_cl.update(output['cl_loss'].item(), batch.batch.max().item()+1)
-            
+
             all_molecular_embeddings.append(output['molecular_proj_output'].detach().cpu())
             all_spectra_embeddings.append(output['spectral_proj_output'].detach().cpu())
-            
+
             if 'matching_loss' in output:
                 eval_losses_match.update(output['matching_loss'].item(), batch.batch.max().item()+1)
                 matching_accuracy = output['matching_accuracy'].cpu().item()
                 eval_acc.update(matching_accuracy, batch.batch.max().item()+1)
-            
+
             if self.device_rank == 0:
                 val_acc_desc = f", valid acc:{eval_acc.avg:6f}" if 'matching_accuracy' in output else ""
                 bar.set_description(
                     f'Epoch{epoch:4d}, valid loss:{eval_losses.avg:6f}{val_acc_desc}')
-                    
+
         all_molecular_embeddings = torch.cat(all_molecular_embeddings, dim=0)
         all_spectra_embeddings = torch.cat(all_spectra_embeddings, dim=0)
-        
+
         all_molecular_embeddings = torch.nn.functional.normalize(all_molecular_embeddings, p=2, dim=1)
         all_spectra_embeddings = torch.nn.functional.normalize(all_spectra_embeddings, p=2, dim=1)
 
@@ -196,14 +201,13 @@ class BaseEngine:
             val_acc_desc = f", valid acc:{eval_acc.avg:6f}" if 'matching_accuracy' in output else ""
             logging.info(
                 f'Epoch{epoch:4d}, eval loss:{eval_losses.avg:6f}, molecule_to_spectrum_recall:{molecule_to_spectrum_recall:6f}, spectrum_to_molecule_recall:{spectrum_to_molecule_recall:6f}{val_acc_desc}')
-    
-        return {'loss':eval_losses.avg, 
-                'cl_loss':eval_losses_cl.avg, 
-                'recall':spectrum_to_molecule_recall, 
-                'matching_loss':eval_losses_match.avg if "matching_loss" in output else None, 
-                'acc':eval_acc.avg if "matching_accuracy" in output else None}
-    
-    
+
+        return {'loss':eval_losses.avg,
+                'cl_loss':eval_losses_cl.avg,
+                'recall':spectrum_to_molecule_recall,
+                }
+
+
 def compute_recall(similarity_matrix, k, verbose=False):
     num_queries = similarity_matrix.size(0)
     _, topk_indices = similarity_matrix.topk(k, dim=1, largest=True, sorted=True)
@@ -212,12 +216,12 @@ def compute_recall(similarity_matrix, k, verbose=False):
         if i in topk_indices[i]:
             correct += 1
     recall_at_k = correct / num_queries
-    
+
     if verbose:
         print(f'recall@{k}:{recall_at_k:.5f}')
     else:
         return recall_at_k
-    
+
 
 def seed_everything(seed):
     random.seed(seed)
@@ -226,3 +230,14 @@ def seed_everything(seed):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
+
+
+class NoopSummaryWriter:
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def __getattr__(self, name):
+        return lambda *args, **kwargs: None
+
+    def __setattr__(self, name, value):
+        pass

@@ -4,7 +4,8 @@ import torch.nn.functional as F
 
 from .spectral_base import SpectralEncoding, SpectralEncoder, AttentionalPooling
 from .transformer_modules import MultiHeadedAttention, PositionwiseFeedForward, DecoderLayer, LayerNorm
-from .transformer_modules import cl_loss, clones
+from .transformer_modules import clip_loss, clones
+import torch.distributed as dist
 
 class MatchingEncoder(nn.Module):
     def __init__(self, d_model=512, nhead=8, nlayers=6, dropout=0.1, attn_fn=None):
@@ -25,12 +26,12 @@ class MatchingEncoder(nn.Module):
 
 class Spec2ConfBase(nn.Module):
     def __init__(self,
-                 nheads=8, 
-                 nlayers=6, 
+                 nheads=8,
+                 nlayers=6,
                  encoder_layers=None,
                  pooling_layers=4,
                  matching_layers=2,
-                 d_model=512, 
+                 d_model=512,
                  d_proj=256,
                  pooling_queries=128,
                  concat_spectrum=False,
@@ -39,19 +40,21 @@ class Spec2ConfBase(nn.Module):
                  num_experts=1,
                  mask_ratio=0.0,
                  balance_loss_weight=0.0,
+                 gpu_align=False,  # NOTE: enable this may improve spectrum-strcture task but hurt spectrum-conformation task, all model is trained by False
                  **kwargs
                  ):
         super().__init__()
-        
+
         self.d_model = d_model
         self.attn_fn = attn_fn
         self.nheads = nheads
-        
+
         self.use_matching_loss = use_matching_loss
         self.concat_spectrum = concat_spectrum
         self.pooling_layers = pooling_layers
         self.balance_loss_weight = balance_loss_weight
         self.mask_ratio = mask_ratio
+        self.gpu_align = gpu_align
         self.logit_scale = nn.Parameter(torch.rand([]))
         
         assert encoder_layers + pooling_layers == nlayers
@@ -91,11 +94,11 @@ class Spec2ConfBase(nn.Module):
         else:
             spectral_inputs = torch.stack([inputs.get('raman'), inputs.get('ir')], dim=1)        
             if self.training:
-                # 以 self.mask_ratio 的概率在训练后期随机关掉一个模态
+                # randomly drop one modality late in training with prob self.mask_ratio
                 mask = torch.rand(1)
-                if mask < self.mask_ratio / 2: # 只给 Raman
+                if mask < self.mask_ratio / 2:  # keep Raman only
                     spectral_inputs[:, 1, :] = 0
-                elif mask < self.mask_ratio: # 只给 IR
+                elif mask < self.mask_ratio:  # keep IR only
                     spectral_inputs[:, 0, :] = 0
             
         spectral_embeds = self.spectral_encoding(spectral_inputs)
@@ -113,22 +116,43 @@ class Spec2ConfBase(nn.Module):
     def get_molecular_embedding(self, inputs, return_node_features):
         outputs = self.molecular_encoder(pos=inputs.pos, batch=inputs.batch, z=inputs.x, edge_index=inputs.edge_index, return_node_features=return_node_features)
         return outputs
-    
-    def compute_cl_loss(self, molecular_output, spectral_output, return_sim=False):
-        molecular_output = F.normalize(molecular_output, p=2, dim=1)
-        spectral_output = F.normalize(spectral_output, p=2, dim=1)
 
+    def compute_cl_loss(self, mol_feat, spec_feat):
+        mol_feat = F.normalize(mol_feat, p=2, dim=1)
+        spec_feat = F.normalize(spec_feat, p=2, dim=1)
+
+        world_size = 1
+        if self.gpu_align:  # effective for spectrum-molecule, detrimental for spectrum-conformation
+            mol_feat, spec_feat, world_size = self._gather_cl_features(mol_feat, spec_feat)
+        
         logit_scale = self.logit_scale.exp()
-        logits_per_smiles = torch.matmul(
-            molecular_output, spectral_output.t()) * logit_scale
-        logits_per_spectrum = logits_per_smiles.T
-        loss = cl_loss(logits_per_spectrum)
-        
-        if return_sim:
-            return loss, logits_per_smiles, logits_per_spectrum
-        else:
-            return loss
-        
+        sim = torch.matmul(mol_feat, spec_feat.t()) * logit_scale
+
+        cl_loss = clip_loss(sim)
+
+        return cl_loss * world_size
+
+    def _gather_cl_features(self, mol_feat, spec_feat):
+        if not dist.is_available() or not dist.is_initialized():
+            return mol_feat, spec_feat, 1
+
+        world_size = dist.get_world_size()
+        if world_size == 1:
+            return mol_feat, spec_feat, 1
+
+        rank = dist.get_rank()
+        return (
+            self._gather_feature_with_local_grad(mol_feat, rank, world_size),
+            self._gather_feature_with_local_grad(spec_feat, rank, world_size),
+            world_size,
+        )
+
+    @staticmethod
+    def _gather_feature_with_local_grad(feature, rank, world_size):
+        gathered = [torch.zeros_like(feature) for _ in range(world_size)]
+        dist.all_gather(gathered, feature.contiguous())
+        gathered[rank] = feature
+        return torch.cat(gathered, dim=0)
     
     def forward(self):
         raise TypeError('employ _forward method')
@@ -159,7 +183,7 @@ class Spec2ConfBase(nn.Module):
         result_dict = {}
         loss = torch.tensor(0, device=spectral_cls_token.device, dtype=spectral_cls_token.dtype)
         
-        cl_loss, sim_m2s, sim_s2m = self.compute_cl_loss(molecular_contra_token, spectral_contra_token, return_sim=True)
+        cl_loss = self.compute_cl_loss(molecular_contra_token, spectral_contra_token)
         result_dict['cl_loss'] = cl_loss
         loss += cl_loss
         
@@ -180,23 +204,3 @@ class Spec2ConfBase(nn.Module):
 
         return result_dict
     
-    
-    def matching(self, inputs):
-        
-        spectral_outputs, spectral_mask = self.get_spectral_embedding(inputs)
-        spectral_outputs = self.attn_pool(spectral_outputs, src_mask=spectral_mask)
-        spectral_attention_mask_with_cls = torch.ones(size=(spectral_outputs.size(0), self.attn_pool.num_queries), device=spectral_outputs.device)
-
-        molecular_outputs = self.get_molecular_embedding(inputs, return_node_features=True)
-        _, molecular_outputs, molecular_mask = molecular_outputs
-        molecular_attention_mask_with_cls = torch.cat([torch.ones(size=(molecular_mask.size(0), 1), device=molecular_mask.device), molecular_mask], dim=1)
-        molecular_embeds = torch.cat([self.matching_token.repeat(molecular_mask.size(0), 1).unsqueeze(1), molecular_outputs], dim=1)
-        
-        multimodal_outputs = self.matching_encoder(molecular_embeds, 
-                                                     memory=spectral_outputs,  
-                                                     src_mask=spectral_attention_mask_with_cls,
-                                                     tgt_mask=molecular_attention_mask_with_cls,
-                                                     )
-        
-        matching_outputs = self.matching_head(multimodal_outputs[:, 0, :])
-        return matching_outputs
