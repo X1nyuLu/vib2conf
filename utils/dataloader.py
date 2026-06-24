@@ -33,7 +33,7 @@ def pre_transform_func(data: dict) -> Data:
     
     return data_object
 
-class Spec2ConfDataset(InMemoryDataset):
+class Vib2ConfDataset(InMemoryDataset):
     def __init__(self, root, mode, transform=None, pre_transform=None, pre_filter=None, force_reload=False):
         self.mode = mode
         super().__init__(root, transform, pre_transform, pre_filter, force_reload=force_reload)
@@ -95,7 +95,7 @@ class Dataloader:
         if verbose: 
             print(f'[train set] = {self.ds} | [target keys] = {self.target_keys}')
         
-        self.dataset = Spec2ConfDataset(
+        self.dataset = Vib2ConfDataset(
             root=f'{self.data_dir}/{self.ds}', 
             mode=self.mode, 
             pre_transform=pre_transform_func,

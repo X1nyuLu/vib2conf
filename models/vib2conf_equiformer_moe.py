@@ -45,87 +45,86 @@ class Vib2ConfEquiformerMoE(Vib2ConfBase):
 
 # MoE for molecular encoding
 @register_model
-def vibc2conf_equiformer_moe2(**kwargs):
+def vib2conf_equiformer_moe2(**kwargs):
     model = Vib2ConfEquiformerMoE(num_experts=2, **kwargs)
     return model
 
 @register_model
-def vibc2conf_equiformer_moe3(**kwargs):
+def vib2conf_equiformer_moe3(**kwargs):
     model = Vib2ConfEquiformerMoE(num_experts=3, **kwargs)
     return model
 
 @register_model
-def vibc2conf_equiformer_moe4(**kwargs):
+def vib2conf_equiformer_moe4(**kwargs):
     model = Vib2ConfEquiformerMoE(num_experts=4, **kwargs)
     return model
 
 @register_model
-def vibc2conf_equiformer_moe5(**kwargs):
+def vib2conf_equiformer_moe5(**kwargs):
     model = Vib2ConfEquiformerMoE(num_experts=5, **kwargs)
     return model
 
 @register_model
-def vibc2conf_equiformer_moe6(**kwargs):
+def vib2conf_equiformer_moe6(**kwargs):
     model = Vib2ConfEquiformerMoE(num_experts=6, **kwargs)
     return model
 
 @register_model
-def vibc2conf_equiformer_moe_balance01(**kwargs):
+def vib2conf_equiformer_moe_balance01(**kwargs):
     model = Vib2ConfEquiformerMoE(num_experts=3, balance_loss_weight=0.1, **kwargs)
     return model
 
 @register_model
-def vibc2conf_equiformer_moe_balance001(**kwargs):
+def vib2conf_equiformer_moe_balance001(**kwargs):
     model = Vib2ConfEquiformerMoE(num_experts=3, balance_loss_weight=0.01, **kwargs)
     return model
 
 # Best setting for single modality in spectrum-conformation task
 @register_model
-def vibc2conf_equiformer_moe_balance0001(**kwargs):
+def vib2conf_equiformer_moe_balance0001(**kwargs):
     model = Vib2ConfEquiformerMoE(num_experts=3, balance_loss_weight=0.001, **kwargs)
     return model
 
 @register_model
-def vibc2conf_equiformer_moe_balance00001(**kwargs):
+def vib2conf_equiformer_moe_balance00001(**kwargs):
     model = Vib2ConfEquiformerMoE(num_experts=3, balance_loss_weight=0.0001, **kwargs)
     return model
 
 # Best setting for single modality in spectrum-structure task
 @register_model
-def vibc2conf_equiformer_moe_balance0001_align(**kwargs):
+def vib2conf_equiformer_moe_balance0001_align(**kwargs):
     model = Vib2ConfEquiformerMoE(num_experts=3, balance_loss_weight=0.001, gpu_align=True, **kwargs)
     return model
 
-
 @register_model
-def vibc2conf_equiformer_moe_concat(**kwargs):
+def vib2conf_equiformer_moe_concat(**kwargs):
     model = Vib2ConfEquiformerMoE(num_experts=3, concat_spectrum=True, **kwargs)
     return model
 
 @register_model
-def vibc2conf_equiformer_moe_concat_balance01(**kwargs):
+def vib2conf_equiformer_moe_concat_balance01(**kwargs):
     model = Vib2ConfEquiformerMoE(num_experts=3, concat_spectrum=True, balance_loss_weight=0.1, **kwargs)
     return model
 
 @register_model
-def vibc2conf_equiformer_moe_concat_balance001(**kwargs):
+def vib2conf_equiformer_moe_concat_balance001(**kwargs):
     model = Vib2ConfEquiformerMoE(num_experts=3, concat_spectrum=True, balance_loss_weight=0.01, **kwargs)
     return model
 
 # Best setting for double modality in spectrum-conformation task
 @register_model
-def vibc2conf_equiformer_moe_concat_balance0001(**kwargs):
+def vib2conf_equiformer_moe_concat_balance0001(**kwargs):
     model = Vib2ConfEquiformerMoE(num_experts=3, concat_spectrum=True, balance_loss_weight=0.001, **kwargs)
     return model
 
 @register_model
-def vibc2conf_equiformer_moe_concat_balance00001(**kwargs):
+def vib2conf_equiformer_moe_concat_balance00001(**kwargs):
     model = Vib2ConfEquiformerMoE(num_experts=3, concat_spectrum=True, balance_loss_weight=0.0001, **kwargs)
     return model
 
 # Best setting for double modality in spectrum-structure task
 @register_model
-def vibc2conf_equiformer_moe_concat_balance0001_align(**kwargs):
+def vib2conf_equiformer_moe_concat_balance0001_align(**kwargs):
     model = Vib2ConfEquiformerMoE(num_experts=3, concat_spectrum=True, balance_loss_weight=0.001, gpu_align=True, **kwargs)
     return model
 
