@@ -22,5 +22,5 @@ def build_model(model, **kwargs):
     return get_model_class(model)(**kwargs)
 
 
-from .spec2conf_equiformer_base import *
-from .spec2conf_equiformer_moe import *
+from .vib2conf_equiformer_base import *
+from .vib2conf_equiformer_moe import *

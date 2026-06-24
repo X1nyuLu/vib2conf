@@ -24,7 +24,7 @@ class MatchingEncoder(nn.Module):
         layer_output = self.norm(layer_output)
         return layer_output
 
-class Spec2ConfBase(nn.Module):
+class Vib2ConfBase(nn.Module):
     def __init__(self,
                  nheads=8,
                  nlayers=6,
